@@ -7,10 +7,10 @@ __pycache__/
 /data
 *.zip
 
-# Trained models: only the best model (CatBoost) and the files it needs are committed.
+# Trained models: only the best model (LightGBM) and the files it needs are committed.
 # `python train.py` recreates all three models.
 artifacts/*
-!artifacts/catboost/
+!artifacts/lightgbm/
 !artifacts/job_buying_power.pkl
 !artifacts/metadata.json
 

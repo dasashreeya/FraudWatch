@@ -12,7 +12,7 @@ transactions, or at labels, changes. Differences below 0.01% of a feature's spre
 rounding.
 
 Expected result:
-  - all 60 history features: identical (no look-ahead, no labels)
+  - all 102 history features: identical (no look-ahead, no labels)
   - the 3 job buying-power features: change, by design. They are fitted on the whole training period, which
     is look-ahead for training rows, but they use no fraud labels (see README)
   - the 8 deliberately leaky merchant features from leaky_reference.py: must change. They are the positive
@@ -27,15 +27,18 @@ import pandas as pd
 
 import config
 from data import assign_partitions, prepare, read_transactions, require_files
-from features import (BASE_NUM, HISTORY_FEATURES, JOB_F, MLOC_F, MP_F, SIM_F, TRAVEL_F, TSL_F, ULOC_F, UM_F, USER_F,
-                      JobBuyingPower, add_history_features)
+from features import (BASE_NUM, BURST_F, HABIT_F, HISTORY_FEATURES, JOB_F, LAG_EXT_F, LAG_F, MLOC_F, MP_F, NIGHT_F,
+                      RECENT_F, SEGMENT_F, SIM_F, TSL_F, UCAT_F, UM_F, USER_F, VELOCITY_F, JobBuyingPower,
+                      add_history_features)
 from leaky_reference import LEAKY_FEATURES, add_leaky_features
 
 CUTOFF = '2019-09-01'
 GROUPS = [('base', BASE_NUM), ('user history', USER_F), ('user x merchant', UM_F), ('merchant profiles', MP_F),
           ('job buying power', JOB_F), ('merchant similarity', SIM_F), ('merchant location', MLOC_F),
-          ('user location', ULOC_F), ('travel', TRAVEL_F), ('time since last', TSL_F),
-          ('leaky control (leaky_reference.py)', LEAKY_FEATURES)]
+          ('time since last', TSL_F), ('velocity (1 h - 72 h)', VELOCITY_F), ('night activity', NIGHT_F),
+          ('card x category', UCAT_F), ('previous transactions', LAG_F + LAG_EXT_F),
+          ('recent unusual activity', BURST_F), ('last 5 / 10 transactions', RECENT_F), ('card habits', HABIT_F),
+          ('cardholder segment', SEGMENT_F), ('leaky control (leaky_reference.py)', LEAKY_FEATURES)]
 
 
 def build(df):

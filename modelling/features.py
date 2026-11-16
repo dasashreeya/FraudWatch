@@ -6,6 +6,8 @@ There are two kinds of features:
    every row only uses transactions strictly BEFORE it (by timestamp) and never a fraud label. So a feature
    can be computed at the moment a card is swiped, and the same code serves training and inference: give
    it the history plus the new transactions and it returns identical values for the new rows.
+   They describe the card's long-term profile (spending, merchants, categories) and, most importantly, its
+   recent activity (the last hours and the last few transactions), which is what reveals fraud bursts.
 
 2. Job "buying power": `JobBuyingPower`. A small text model that estimates each cardholder's typical
    spending from their job title. It is fitted once on the training period (train.py), saved, and
@@ -17,6 +19,8 @@ with no label filter. Lookup tables over all non-fraud training rows would be si
 value would then depend on its own label and on later transactions (README section 5.4; leaky_reference.py
 keeps that version as a test control).
 """
+import warnings
+
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -29,8 +33,7 @@ from data import CATEGORICAL, LABEL
 # ---------------------------------------------------------------------------------------------------------------
 # Feature groups. Every numeric model feature is listed here; NUMERIC_FEATURES fixes the column order.
 # ---------------------------------------------------------------------------------------------------------------
-BASE_NUM = ['amt', 'city_pop', 'lat', 'long', 'merch_lat', 'merch_long',     # raw transaction / cardholder values
-            'hour', 'dow', 'month', 'age', 'dist_um_km']                       # time of day/week, age, card->merchant km
+BASE_NUM = ['amt', 'city_pop', 'hour', 'dow', 'month', 'age', 'dist_um_km']  # transaction / cardholder values
 USER_F = ([f'u_amt_{s}_{w}' for w in (3, 7, 30, 'all') for s in ('cnt', 'mean')]  # card's earlier spending
           + ['acct_age_days', 'amt_vs_u30', 'amt_vs_uall'])
 UM_F = [f'um_cnt_{w}' for w in (3, 7, 30, 'all')]                              # earlier visits to this merchant
@@ -39,16 +42,42 @@ MP_F = ['m_amt_cnt_30', 'm_amt_mean_30', 'm_amt_cnt_all', 'm_amt_mean_all',  # m
 JOB_F = ['job_bp_model', 'job_bp_stat', 'amt_vs_job_bp']                      # job buying power (JobBuyingPower)
 SIM_F = ['sim_mean_7', 'sim_max_7', 'sim_mean_30', 'sim_max_30']             # merchant similarity
 MLOC_F = ['mdist_z', 'cdist_z', 'mloc_dev_km', 'ms_pair_n']                  # merchant-location oddity
-ULOC_F = [f'uloc_dist_{w}' for w in (3, 7, 30)]                               # distance from usual location
-TRAVEL_F = [f'{p}_{w}' for p in ('trav_km_mean', 'trav_long_frac', 'trav_cnt') for w in (7, 30, 90)]  # travel
-TSL_F = ['since_last_s', 'log_since_last', 'speed_kmh', 'since_last_merch_s', 'hop_km']               # recency
+TSL_F = ['since_last_s', 'log_since_last', 'since_last_merch_s']             # time since previous transactions
 
-NUMERIC_FEATURES = BASE_NUM + USER_F + UM_F + MP_F + JOB_F + SIM_F + MLOC_F + ULOC_F + TRAVEL_F + TSL_F   # 63
-HISTORY_FEATURES = [c for c in NUMERIC_FEATURES if c not in JOB_F]                                       # 60
+# Recent activity of the card. Fraud comes in bursts, so the strongest evidence for a transaction is often how
+# the card behaved in the hours and transactions just before it (README section 5.3).
+VELOCITY_F = ['u_cnt_1h', 'u_amt_mean_1h', 'u_cnt_6h', 'u_amt_mean_6h', 'u_cnt_24h', 'u_amt_mean_24h',
+              'u_amt_sum_24h', 'amt_vs_u24h', 'u_amt_max_24h', 'u_amt_max_72h']    # activity in the last 1 h-72 h
+NIGHT_F = ['is_night', 'u_night_cnt_24h', 'u_night_cnt_72h', 'u_night_frac_all']  # night-time activity
+UCAT_F = ['uc_cnt_all', 'uc_cnt_30', 'uc_frac_all', 'amt_vs_uc']                 # card's history in this category
+LAG_F = ['lag1_amt_vs_cat', 'lag1_hour', 'lag1_amt',                              # the previous 3 transactions
+         'lag2_amt_vs_cat', 'lag2_hour', 'lag2_amt', 'hours_since_lag2',
+         'lag3_amt_vs_cat', 'lag3_hour', 'lag3_amt', 'hours_since_lag3', 'lag1_same_category']
+BURST_F = ['u_odd_cnt_24h', 'u_odd_cnt_72h', 'u_avc_mean_24h', 'u_avc_mean_72h',   # recent unusual transactions
+           'u_avc_max_24h', 'u_avc_max_72h']
+HABIT_F = ['uh_frac_all', 'uhb_frac_all', 'u_cnt_today', 'today_vs_typical',       # deviations from card habits
+           'amt_vs_umax', 'amt_vs_ucmax']
+SEGMENT_F = ['amt_vs_segcat', 'amt_z_segcat']                                      # vs similar cardholders
+LAG_EXT_F = (['lag4_amt_vs_cat', 'lag4_hour', 'hours_since_lag4', 'lag5_amt_vs_cat', 'lag5_hour',  # 4th-5th previous
+              'hours_since_lag5'] + [f'lag{k}_category_code' for k in (1, 2, 3)] + ['lag1_amt_z_m'])
+RECENT_F = [f'last{n}_{c}' for n in (5, 10) for c in ('night_frac', 'avc_mean', 'avc_max')]  # last 5 / 10 transactions
+ACTIVITY_F = VELOCITY_F + NIGHT_F + UCAT_F + LAG_F + BURST_F + HABIT_F + SEGMENT_F + LAG_EXT_F + RECENT_F   # 60
+
+NUMERIC_FEATURES = BASE_NUM + USER_F + UM_F + MP_F + JOB_F + SIM_F + MLOC_F + TSL_F + ACTIVITY_F           # 105
+HISTORY_FEATURES = [c for c in NUMERIC_FEATURES if c not in JOB_F]                                       # 102
 CATEGORICAL_FEATURES = CATEGORICAL                                                                       # 6
 
 # Columns kept in the feature table besides the features: identifiers, label, and inputs of JobBuyingPower
 ID_COLUMNS = ['trans_num', 'cc_num', 'ts', 'trans_date_trans_time', 'source', LABEL]
+# Raw coordinates: kept in the table for reference and for the leakage check's control features, but not used by the
+# models. Merchant positions are random points near the cardholder in this simulated data, and home coordinates
+# identify the card, which only helps a model memorise cards (README section 5.3).
+RAW_COLUMNS = ['lat', 'long', 'merch_lat', 'merch_long']
+
+NIGHT_HOURS = (22, 23, 0, 1, 2, 3)
+# Fixed category list: a category's code must not depend on which categories one scoring batch happens to contain
+CATEGORIES = ['entertainment', 'food_dining', 'gas_transport', 'grocery_net', 'grocery_pos', 'health_fitness',
+              'home', 'kids_pets', 'misc_net', 'misc_pos', 'personal_care', 'shopping_net', 'shopping_pos', 'travel']
 
 
 def haversine(lat1, lon1, lat2, lon2):
@@ -212,35 +241,147 @@ def _merchant_location(df):
     df['ms_pair_n'] = np.log1p(win_stats(df, ['merchant', 'state'], 'one', [], 'msp')['msp_cnt_all'].to_numpy())
 
 
-def _location_travel_recency(df):
-    """User location, travel and recency: distance from the card's recent transaction locations, travel between
-    consecutive transactions, and time since the card's / card-merchant pair's previous transaction."""
-    # user location: distance from the centroid of the card's earlier transaction locations (3/7/30 days)
-    lat_w = win_stats(df, ['cc_num'], 'merch_lat', [3, 7, 30], 'ul_lat', empty=np.nan)
-    lon_w = win_stats(df, ['cc_num'], 'merch_long', [3, 7, 30], 'ul_lon', empty=np.nan)
-    for w in (3, 7, 30):
-        dist = haversine(df.merch_lat, df.merch_long, lat_w[f'ul_lat_mean_{w}'], lon_w[f'ul_lon_mean_{w}'])
-        df[f'uloc_dist_{w}'] = np.where(lat_w[f'ul_lat_cnt_{w}'] > 0, dist, -1)
-    # travel: "hops" between consecutive transactions of the card, summarised over 7/30/90 days
-    g_u = df.groupby('cc_num')
-    df['hop_km'] = haversine(df.merch_lat, df.merch_long, g_u.merch_lat.shift(), g_u.merch_long.shift()).fillna(0)
-    df['hop_long'] = (df.hop_km > 50).astype(float)
-    hop = win_stats(df, ['cc_num'], 'hop_km', [7, 30, 90], 'trav_km')
-    hopl = win_stats(df, ['cc_num'], 'hop_long', [7, 30, 90], 'trav_long')
-    for w in (7, 30, 90):
-        df[f'trav_km_mean_{w}'] = hop[f'trav_km_mean_{w}']
-        df[f'trav_long_frac_{w}'] = hopl[f'trav_long_mean_{w}']
-        df[f'trav_cnt_{w}'] = hop[f'trav_km_cnt_{w}']
-    # recency: seconds since the previous transaction of the card (-1 for its first), implied speed, card-merchant recency
-    df['since_last_s'] = (df.ts - g_u.ts.shift()).fillna(-1)
+def _recency(df):
+    """Time since the card's previous transaction (-1 for its first) and since its previous one at this merchant."""
+    df['since_last_s'] = (df.ts - df.groupby('cc_num').ts.shift()).fillna(-1)
     with np.errstate(divide='ignore'):          # log1p(-1) on first transactions is discarded by np.where
         df['log_since_last'] = np.where(df.since_last_s >= 0, np.log1p(df.since_last_s), -1)
-    df['speed_kmh'] = np.where(df.since_last_s > 0, df.hop_km / (df.since_last_s / 3600).clip(lower=1 / 60), 0).clip(0, 2000)
     df['since_last_merch_s'] = df.groupby(['cc_num', 'merchant']).ts.diff().fillna(-1)
 
 
-HISTORY_STEPS = [_base, _user_history, _user_merchant_history, _merchant_profiles,
-                 _merchant_similarity, _merchant_location, _location_travel_recency]
+# ---------------------------------------------------------------------------------------------------------------
+# Recent activity of the card. In this data fraud arrives in bursts: once a card is compromised, all of its
+# transactions for up to ~3 days are fraud. Many of them look ordinary on their own (a $40 purchase in the
+# afternoon), but the card's previous transactions give them away (several large night purchases just before).
+# ---------------------------------------------------------------------------------------------------------------
+def _rolling(df, values, window, how):
+    """Per-card rolling statistic over the time window BEFORE each row ('1D', '3D', ...); NaN when empty.
+    closed='left' excludes the row itself (and anything at exactly the same second)."""
+    s = pd.Series(np.asarray(values, float), index=pd.to_datetime(df.ts.to_numpy(), unit='s'))
+    r = getattr(s.groupby(df.cc_num.to_numpy()).rolling(window, closed='left'), how)()
+    # groupby sorts by card and keeps time order within a card: the same order as the (card, time)-sorted table
+    assert (r.index.get_level_values(0).to_numpy() == df.cc_num.to_numpy()).all(), 'rows must be sorted by card'
+    return r.to_numpy()
+
+
+def _velocity(df):
+    """How active the card was in the last 1 h / 6 h / 24 h (count, mean and total amount) and its largest
+    amount in the last 24 h / 72 h."""
+    hour, six_hours = 1 / 24, 0.25
+    w = win_stats(df, ['cc_num'], 'amt', [hour, six_hours, 1], 'v')
+    for d, name in ((hour, '1h'), (six_hours, '6h'), (1, '24h')):
+        df[f'u_cnt_{name}'] = w[f'v_cnt_{d}'].to_numpy()
+        df[f'u_amt_mean_{name}'] = w[f'v_mean_{d}'].to_numpy()
+    df['u_amt_sum_24h'] = (w['v_cnt_1'] * w['v_mean_1'].clip(lower=0)).to_numpy()
+    df['amt_vs_u24h'] = np.where(w['v_mean_1'] > 0, df.amt / w['v_mean_1'].clip(lower=1e-6), -1)
+    df['u_amt_max_24h'] = np.nan_to_num(_rolling(df, df.amt, '1D', 'max'), nan=-1)
+    df['u_amt_max_72h'] = np.nan_to_num(_rolling(df, df.amt, '3D', 'max'), nan=-1)
+
+
+def _night(df):
+    """Is this a night transaction (22:00-03:59); how many of the card's transactions in the last 24 h / 72 h
+    were; and what share of all its earlier transactions were (-1 without history)."""
+    df['is_night'] = df.hour.isin(NIGHT_HOURS).astype(float)
+    w = win_stats(df, ['cc_num'], 'is_night', [1, 3], 'n')
+    df['u_night_cnt_24h'] = (w['n_cnt_1'] * w['n_mean_1'].clip(lower=0)).to_numpy()
+    df['u_night_cnt_72h'] = (w['n_cnt_3'] * w['n_mean_3'].clip(lower=0)).to_numpy()
+    df['u_night_frac_all'] = w['n_mean_all'].to_numpy()
+
+
+def _card_category(df):
+    """How often the card used this category before, and this amount vs the card's own average in it."""
+    w = win_stats(df, ['cc_num', 'category'], 'amt', [30], 'uc')
+    df['uc_cnt_all'] = w['uc_cnt_all'].to_numpy()
+    df['uc_cnt_30'] = w['uc_cnt_30'].to_numpy()
+    df['uc_frac_all'] = np.where(df.u_amt_cnt_all > 0, w['uc_cnt_all'] / df.u_amt_cnt_all.clip(lower=1), -1)
+    df['amt_vs_uc'] = np.where(w['uc_mean_all'] > 0, df.amt / w['uc_mean_all'].clip(lower=1e-6), -1)
+
+
+def _previous_transactions(df):
+    """The card's previous five transactions: amount vs category average, hour, hours since then; for the last
+    three also the amount and category; whether the previous one was in the same category (-1 = none)."""
+    g = df.groupby('cc_num', sort=False)
+    for k in (1, 2, 3):
+        df[f'lag{k}_amt_vs_cat'] = g.amt_vs_cat.shift(k).fillna(-1)
+        df[f'lag{k}_hour'] = g.hour.shift(k).fillna(-1)
+        df[f'lag{k}_amt'] = g.amt.shift(k).fillna(-1)
+        if k > 1:
+            df[f'hours_since_lag{k}'] = ((df.ts - g.ts.shift(k)) / 3600).fillna(-1)
+    df['lag1_same_category'] = (df.category == g.category.shift(1)).astype(float)
+    for k in (4, 5):
+        df[f'lag{k}_amt_vs_cat'] = g.amt_vs_cat.shift(k).fillna(-1)
+        df[f'lag{k}_hour'] = g.hour.shift(k).fillna(-1)
+        df[f'hours_since_lag{k}'] = ((df.ts - g.ts.shift(k)) / 3600).fillna(-1)
+    codes = df.category.map({c: i for i, c in enumerate(CATEGORIES)}).astype(float).fillna(-1)
+    for k in (1, 2, 3):
+        df[f'lag{k}_category_code'] = codes.groupby(df.cc_num).shift(k).fillna(-1)
+    df['lag1_amt_z_m'] = g.amt_z_m.shift(1).fillna(0)
+
+
+def _burst(df):
+    """Recent unusual activity: the card's earlier night transactions above twice their category's average
+    amount in the last 24 h / 72 h, and the mean / max amount-vs-category of its transactions in those windows."""
+    df['avc_pos'] = df.amt_vs_cat.clip(lower=0)
+    df['odd'] = (df.hour.isin(NIGHT_HOURS) & (df.amt_vs_cat > 2)).astype(float)
+    o = win_stats(df, ['cc_num'], 'odd', [1, 3], 'o', empty=0.0)
+    a = win_stats(df, ['cc_num'], 'avc_pos', [1, 3], 'a')
+    df['u_odd_cnt_24h'] = (o['o_cnt_1'] * o['o_mean_1']).to_numpy()
+    df['u_odd_cnt_72h'] = (o['o_cnt_3'] * o['o_mean_3']).to_numpy()
+    df['u_avc_mean_24h'], df['u_avc_mean_72h'] = a['a_mean_1'].to_numpy(), a['a_mean_3'].to_numpy()
+    df['u_avc_max_24h'] = np.nan_to_num(_rolling(df, df.avc_pos, '1D', 'max'), nan=-1)
+    df['u_avc_max_72h'] = np.nan_to_num(_rolling(df, df.avc_pos, '3D', 'max'), nan=-1)
+
+
+def _habits(df):
+    """Deviations from the card's habits: share of its earlier transactions at this hour and in this 3-hour block;
+    its transactions earlier the same day vs its typical daily count (last 30 days); this amount vs its largest
+    earlier amount, overall and in this category."""
+    df['hour_block'] = df.hour // 3
+    df['day'] = df.ts // 86400
+    n = df.u_amt_cnt_all
+    h = win_stats(df, ['cc_num', 'hour'], 'one', [], 'h', empty=0.0)
+    hb = win_stats(df, ['cc_num', 'hour_block'], 'one', [], 'hb', empty=0.0)
+    df['uh_frac_all'] = np.where(n > 0, h['h_cnt_all'] / n.clip(lower=1), -1)
+    df['uhb_frac_all'] = np.where(n > 0, hb['hb_cnt_all'] / n.clip(lower=1), -1)
+    d = win_stats(df, ['cc_num', 'day'], 'one', [], 'd', empty=0.0)
+    df['u_cnt_today'] = d['d_cnt_all'].to_numpy()
+    df['today_vs_typical'] = np.where(df.u_amt_cnt_30 > 0, d['d_cnt_all'] / (df.u_amt_cnt_30 / 30).clip(lower=1e-6), -1)
+    umax = df.amt.groupby(df.cc_num).shift(1).groupby(df.cc_num).cummax()
+    keys = [df.cc_num, df.category]
+    ucmax = df.amt.groupby(keys).shift(1).groupby(keys).cummax()
+    df['amt_vs_umax'] = (df.amt / umax).fillna(-1)
+    df['amt_vs_ucmax'] = (df.amt / ucmax).fillna(-1)
+
+
+def _segment(df):
+    """This amount vs earlier transactions in this category by similar cardholders (all cards): segment =
+    gender x age band (<25, 25-49, 50+) x urban / rural (city population 2,500)."""
+    age_band = np.select([df.age < 25, df.age < 50], ['y', 'a'], 'o')
+    df['segment'] = df.gender.astype(str) + '_' + age_band + '_' + np.where(df.city_pop >= 2500, 'u', 'r')
+    m = win_stats(df, ['segment', 'category'], 'amt', [], 's')
+    m2 = win_stats(df, ['segment', 'category'], 'amt2', [], 's2', empty=0.0)
+    std = np.sqrt(np.clip(m2['s2_mean_all'] - m['s_mean_all'].clip(lower=0) ** 2, 0, None))
+    df['amt_vs_segcat'] = np.where(m['s_mean_all'] > 0, df.amt / m['s_mean_all'].clip(lower=1e-6), -1)
+    df['amt_z_segcat'] = np.where(m['s_cnt_all'] > 5, (df.amt - m['s_mean_all']) / (std + 1), 0)
+
+
+def _recent_transactions(df):
+    """The card's last 5 and last 10 transactions (by count, not time): share at night, mean and max
+    amount-vs-category (-1 without history)."""
+    prev = pd.DataFrame({'night': df.is_night.groupby(df.cc_num).shift(1),
+                         'avc': df.avc_pos.groupby(df.cc_num).shift(1)})
+    for n in (5, 10):
+        r = prev.groupby(df.cc_num).rolling(n, min_periods=1)
+        mean = r.mean().reset_index(level=0, drop=True).reindex(df.index)
+        mx = r.max().reset_index(level=0, drop=True).reindex(df.index)
+        df[f'last{n}_night_frac'] = mean.night.fillna(-1)
+        df[f'last{n}_avc_mean'] = mean.avc.fillna(-1)
+        df[f'last{n}_avc_max'] = mx.avc.fillna(-1)
+
+
+HISTORY_STEPS = [_base, _user_history, _user_merchant_history, _merchant_profiles, _merchant_similarity,
+                 _merchant_location, _recency, _velocity, _night, _card_category, _previous_transactions, _burst,
+                 _habits, _segment, _recent_transactions]
 
 
 def add_history_features(df, log=None):
@@ -249,13 +390,17 @@ def add_history_features(df, log=None):
     `df` must contain the history needed for the rows you care about. Every row only uses earlier rows, so
     adding more history never changes the past and future rows never leak into earlier ones.
     Intermediate columns are added to `df` in place (no copy, to save memory). Returns a new table with the
-    identifier columns, label, categoricals, log_amt and the history features.
+    identifier columns, label, categoricals, log_amt, raw coordinates and the history features.
     """
-    for step in HISTORY_STEPS:
-        step(df)
-        if log:
-            log(f'  feature step done: {step.__name__.lstrip("_")}')
-    keep = ID_COLUMNS + CATEGORICAL + ['log_amt'] + HISTORY_FEATURES
+    with warnings.catch_warnings():
+        # Columns are added one at a time, in place, to save memory; pandas warns that this fragments the table,
+        # which only costs a little speed here.
+        warnings.simplefilter('ignore', pd.errors.PerformanceWarning)
+        for step in HISTORY_STEPS:
+            step(df)
+            if log:
+                log(f'  feature step done: {step.__name__.lstrip("_")}')
+    keep = ID_COLUMNS + CATEGORICAL + ['log_amt'] + RAW_COLUMNS + HISTORY_FEATURES
     return df[keep].copy()
 
 

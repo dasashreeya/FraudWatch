@@ -8,7 +8,7 @@ Each model class wraps one gradient-boosting library behind the same interface:
     model.save(directory)            # model file + encoder + feature lists + decision threshold
     model = load_model(directory)
 
-Training procedure (the same for all models): at most 600 boosting rounds; after every round the
+Training procedure (the same for all models): at most 2000 boosting rounds; after every round the
 validation PR-AUC (scikit-learn average precision) is computed; training stops when it has not improved for
 50 rounds; the model is cut back to the best round. The decision threshold is chosen afterwards on validation
 (best_f1_threshold) and applied unchanged to any later data.
@@ -30,7 +30,7 @@ from data import LABEL
 log = logging.getLogger('fraudwatch')
 warnings.filterwarnings('ignore', message='Failed to import numba')   # CatBoost: optional speed-up, not needed
 
-MAX_ITERS = 600     # maximum boosting rounds
+MAX_ITERS = 2000    # maximum boosting rounds (early stopping normally ends training well before)
 PATIENCE = 50       # stop after this many rounds without a better validation PR-AUC
 LOG_EVERY = 50      # progress line every N rounds
 
@@ -140,7 +140,10 @@ class FraudModel:
 
 
 class CatBoostModel(FraudModel):
-    """CatBoost with native categorical features. Settings: learning rate 0.1, depth 6."""
+    """CatBoost with native categorical features. Settings: learning rate 0.1, depth 6, and has_time=True:
+    CatBoost's statistics for categorical features (e.g. how often a merchant had fraud) are built from earlier
+    training rows only, in time order. (Its default uses random orders, so a training row could be encoded with
+    later rows' labels.)"""
     name, model_file = 'catboost', 'model.cbm'
 
     class _ValPRAUC:
@@ -172,9 +175,10 @@ class CatBoostModel(FraudModel):
     def fit(self, fit_df, val_df):
         from catboost import CatBoostClassifier
         CatBoostModel._ValPRAUC.progress = _Progress()
-        self.model = CatBoostClassifier(iterations=MAX_ITERS, learning_rate=0.1, depth=6, random_seed=self.seed,
-                                        od_type='Iter', od_wait=PATIENCE, metric_period=1, thread_count=-1,
-                                        eval_metric=CatBoostModel._ValPRAUC(len(val_df)),
+        fit_df = fit_df.sort_values('ts', kind='stable')       # has_time: the row order is the time order
+        self.model = CatBoostClassifier(iterations=MAX_ITERS, learning_rate=0.1, depth=6, has_time=True,
+                                        random_seed=self.seed, od_type='Iter', od_wait=PATIENCE, metric_period=1,
+                                        thread_count=-1, eval_metric=CatBoostModel._ValPRAUC(len(val_df)),
                                         verbose=0, allow_writing_files=False)
         self.model.fit(self._pool(fit_df), eval_set=self._pool(val_df), use_best_model=True)
         self.best_iteration = self.model.get_best_iteration() + 1

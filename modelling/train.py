@@ -2,7 +2,7 @@
 and save everything predict.py needs.
 
 Usage (from this folder, with the virtual environment active):
-    python train.py                                   # all three models (~4-10 min on a laptop)
+    python train.py                                   # all three models (~5-10 min on a laptop)
     python train.py --models xgboost lightgbm         # a subset
     python train.py --seed 1 --artifacts-dir runs/seed1/artifacts --results-dir runs/seed1/results
 
