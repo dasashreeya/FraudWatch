@@ -65,7 +65,10 @@ ACTIVITY_F = VELOCITY_F + NIGHT_F + UCAT_F + LAG_F + BURST_F + HABIT_F + SEGMENT
 
 NUMERIC_FEATURES = BASE_NUM + USER_F + UM_F + MP_F + JOB_F + SIM_F + MLOC_F + TSL_F + ACTIVITY_F           # 105
 HISTORY_FEATURES = [c for c in NUMERIC_FEATURES if c not in JOB_F]                                       # 102
-CATEGORICAL_FEATURES = CATEGORICAL                                                                       # 6
+# city and job are not model inputs: together they identify the card (city + job + state is unique for every
+# card), so encoding them only lets a model memorise cards, and their statistics would carry card-level label
+# information (README section 5.3). They stay in the table; job feeds the job buying-power model.
+CATEGORICAL_FEATURES = ['merchant', 'category', 'gender', 'state']                                       # 4
 
 # Columns kept in the feature table besides the features: identifiers, label, and inputs of JobBuyingPower
 ID_COLUMNS = ['trans_num', 'cc_num', 'ts', 'trans_date_trans_time', 'source', LABEL]
@@ -167,9 +170,9 @@ def sim_lookback(df, sim_of_pair):
     cc, ts = df.cc_num.to_numpy(), df.ts.to_numpy()
     n = len(df); W7, W30 = 7 * 86400, 30 * 86400
     s7 = np.zeros(n); c7 = np.zeros(n); mx7 = np.zeros(n); s30 = np.zeros(n); c30 = np.zeros(n); mx30 = np.zeros(n)
-    for k in range(1, 400):                        # look back k transactions at a time
-        if k >= n:
-            break
+    k = 0
+    while k + 1 < n:                               # look back k transactions at a time, until none is within 30 days
+        k += 1
         same = cc[k:] == cc[:-k]; d = ts[k:] - ts[:-k]
         ok30 = same & (d <= W30)
         if not ok30.any():
@@ -307,7 +310,8 @@ def _previous_transactions(df):
         df[f'lag{k}_amt'] = g.amt.shift(k).fillna(-1)
         if k > 1:
             df[f'hours_since_lag{k}'] = ((df.ts - g.ts.shift(k)) / 3600).fillna(-1)
-    df['lag1_same_category'] = (df.category == g.category.shift(1)).astype(float)
+    prev_category = g.category.shift(1)
+    df['lag1_same_category'] = np.where(prev_category.isna(), -1, (df.category == prev_category).astype(float))
     for k in (4, 5):
         df[f'lag{k}_amt_vs_cat'] = g.amt_vs_cat.shift(k).fillna(-1)
         df[f'lag{k}_hour'] = g.hour.shift(k).fillna(-1)
@@ -349,8 +353,8 @@ def _habits(df):
     umax = df.amt.groupby(df.cc_num).shift(1).groupby(df.cc_num).cummax()
     keys = [df.cc_num, df.category]
     ucmax = df.amt.groupby(keys).shift(1).groupby(keys).cummax()
-    df['amt_vs_umax'] = (df.amt / umax).fillna(-1)
-    df['amt_vs_ucmax'] = (df.amt / ucmax).fillna(-1)
+    df['amt_vs_umax'] = np.where(umax > 0, df.amt / umax.clip(lower=1e-6), -1)      # -1: no earlier amount
+    df['amt_vs_ucmax'] = np.where(ucmax > 0, df.amt / ucmax.clip(lower=1e-6), -1)
 
 
 def _segment(df):

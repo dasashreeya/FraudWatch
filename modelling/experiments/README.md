@@ -60,7 +60,7 @@ coordinates identify the card. The merchant-location features stayed.
 
 | Idea | Result (validation PR-AUC unless stated) |
 |---|---|
-| Remove card-identifying features (city, job, state, city population, merchant; 5 variants) | 0.9942–0.9947 (A), 0.9953–0.9961 (B): no gain |
+| Remove card-identifying features (city, job, state, city population, merchant; 5 variants) | 0.9942–0.9947 (A), 0.9953–0.9961 (B): no gain. v2 still leaves out city and job, because their encodings would leak later transactions into training rows (main README, section 5.3) |
 | Average CatBoost, XGBoost and LightGBM | best pair 0.9962 vs 0.9958 for XGBoost alone: within noise |
 | Retrain on fit + validation with the early-stopped rounds (simulated on the earlier window) | 0.9957 vs 0.9957: no gain |
 | LightGBM learning rate 0.05 (up to 1,500 rounds) / feature fraction 0.5 | 0.9959 / 0.9950 vs 0.9957 |
@@ -75,11 +75,15 @@ within noise, but the setting removes a look-ahead in how CatBoost encodes categ
 | Model | Features | Val PR-AUC | Test PR-AUC | Test precision | Test recall | Test F1 |
 |---|---|---|---|---|---|---|
 | LightGBM | v1 | 0.9775 | 0.9513 ± 0.0024 | 0.931 | 0.876 | 0.903 |
-| LightGBM | v2 | 0.9956 | **0.9878 ± 0.0005** | 0.974 | 0.951 | 0.963 |
+| LightGBM | v2 | 0.9951 | **0.9877 ± 0.0004** | 0.977 | 0.952 | 0.964 |
 | XGBoost | v1 | 0.9768 | 0.9507 ± 0.0015 | 0.945 | 0.864 | 0.903 |
-| XGBoost | v2 | 0.9954 | **0.9876 ± 0.0004** | 0.971 | 0.956 | 0.963 |
+| XGBoost | v2 | 0.9958 | **0.9878 ± 0.0006** | 0.983 | 0.946 | 0.964 |
 | CatBoost | v1 | 0.9786 | 0.9509 ± 0.0020 | 0.942 | 0.876 | 0.908 |
-| CatBoost | v2 | 0.9945 | **0.9864 ± 0.0006** | 0.985 | 0.951 | 0.968 |
+| CatBoost | v2 | 0.9948 | **0.9871 ± 0.0008** | 0.987 | 0.949 | 0.968 |
+
+The screening runs in sections 2–4 and 6 still had city and job (and, for XGBoost / LightGBM, a frequency
+encoding of merchant) as model inputs. v2 leaves them out (main README, section 5.3), with no measurable change in
+accuracy.
 
 ## 6. Promising next step: score propagation (`stacking.py`)
 A first-stage model scores every transaction. The final model then also gets the scores of the card's
@@ -90,8 +94,10 @@ never shape its own features.
 
 | On top of v2 | Val A | Val B | Test PR-AUC | Test precision | Test recall |
 |---|---|---|---|---|---|
-| LightGBM | 0.9954 | 0.9982 (vs 0.9965) | **0.9915 ± 0.0004** (vs 0.9878) | 0.985 | 0.962 |
-| XGBoost | 0.9958 | | **0.9912 ± 0.0003** (vs 0.9876) | 0.987 | 0.957 |
+| LightGBM | 0.9954 | 0.9982 | **0.9915 ± 0.0004** | 0.985 | 0.962 |
+| XGBoost | 0.9958 | | **0.9912 ± 0.0003** | 0.987 | 0.957 |
+
+The same setup without propagation scored val B 0.9965 and test 0.9878 (LightGBM) / 0.9876 (XGBoost).
 
 It is not in the production pipeline yet, for two reasons:
 - **Training and scoring would need a second model.** That's a deployment decision.

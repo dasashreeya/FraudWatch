@@ -50,9 +50,9 @@ def prepare(raw):
     df[LABEL] = pd.to_numeric(df[LABEL], errors='coerce') if LABEL in df.columns else np.nan
     df['dt'] = pd.to_datetime(df['trans_date_trans_time'], errors='coerce')
     df['dob'] = pd.to_datetime(df['dob'], errors='coerce')
-    bad = df[NUMERIC + ['dt', 'dob']].isna().sum()
+    bad = df[NUMERIC + ['dt', 'dob'] + CATEGORICAL].isna().sum()
     if bad.any():
-        raise ValueError(f'unparseable values: {bad[bad > 0].to_dict()}')
+        raise ValueError(f'missing or unparseable values: {bad[bad > 0].to_dict()}')
     # integer epoch seconds, used for fast time-window arithmetic in the history features
     df['ts'] = ((df['dt'] - pd.Timestamp('1970-01-01')) // pd.Timedelta('1s')).astype('int64')
     for c in CATEGORICAL:

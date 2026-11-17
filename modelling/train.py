@@ -13,8 +13,8 @@ Steps:
   4. Fit the job buying-power model on the fit rows and apply it to every row
   5. For each model: train on fit, early-stop on validation PR-AUC, pick the F1-maximising threshold on
      validation, then evaluate on validation and test with that threshold
-  6. Save each model, and mark the one with the highest VALIDATION PR-AUC as the best model
-     (the test set is only reported, never used for any choice)
+  6. Save each model and mark the main model, chosen on VALIDATION PR-AUC (near-ties go to the lightest
+     library, see choose_main_model); the test set is only reported, never used for any choice
 
 Outputs:
   artifacts/<model>/                model file, encoder, feature lists, threshold (model_info.json)
@@ -44,6 +44,20 @@ from features import CATEGORICAL_FEATURES, NUMERIC_FEATURES, JobBuyingPower, add
 from models import MODELS, best_f1_threshold, evaluate, load_model
 
 log = logging.getLogger('fraudwatch')
+
+# Choosing the main model (the one predict.py uses by default): highest validation PR-AUC, but differences below
+# TIE_TOLERANCE are seed-to-seed noise (about 0.0005 here), so among tied models the lightest library to deploy
+# wins. LightGBM's Linux package is about 3.5 MB, XGBoost's about 130 MB and CatBoost's about 90 MB.
+TIE_TOLERANCE = 0.001
+LIGHTEST_FIRST = ['lightgbm', 'xgboost', 'catboost']
+MAIN_MODEL_RULE = (f'highest validation PR-AUC; models within {TIE_TOLERANCE} of it count as tied, and ties go to '
+                   f'the lightest library ({" > ".join(LIGHTEST_FIRST)})')
+
+
+def choose_main_model(models_meta):
+    top = max(m['val']['pr_auc'] for m in models_meta.values())
+    tied = [n for n, m in models_meta.items() if m['val']['pr_auc'] >= top - TIE_TOLERANCE]
+    return min(tied, key=lambda n: LIGHTEST_FIRST.index(n) if n in LIGHTEST_FIRST else len(LIGHTEST_FIRST))
 
 
 def setup_logging(log_file):
@@ -135,18 +149,30 @@ def main():
                       'fraud_probability': p_test}).to_csv(args.results_dir / 'test_predictions' / f'{name}.csv', index=False)
 
     # metadata.json keeps one entry per saved model. Models not retrained in this run keep their earlier entry,
-    # so `python train.py --models xgboost` still compares against previously trained CatBoost / LightGBM.
+    # so `python train.py --models xgboost` still compares against previously trained CatBoost / LightGBM, but
+    # only if they were trained on the same split with the same features (otherwise they are dropped).
     meta_path = args.artifacts_dir / 'metadata.json'
-    models_meta = json.loads(meta_path.read_text())['models'] if meta_path.exists() else {}
+    previous = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    same_split = previous.get('split') == json.loads(json.dumps(split))
+    models_meta = previous.get('models', {}) if same_split else {}
     now = datetime.now().isoformat(timespec='seconds')
     for r in rows:
         models_meta[r['model']] = dict(trained=now, seed=args.seed, rounds=int(r['rounds']), train_secs=int(r['train_secs']),
                                        val={k[4:]: float(v) for k, v in r.items() if k.startswith('val_')},
                                        test={k[5:]: float(v) for k, v in r.items() if k.startswith('test_')})
-    models_meta = {n: m for n, m in models_meta.items() if (args.artifacts_dir / n / 'model_info.json').exists()}
-    best = max(models_meta, key=lambda n: models_meta[n]['val']['pr_auc'])   # chosen on validation, never on test
 
-    meta = dict(updated=now, best_model=best, best_model_rule='highest validation PR-AUC', models=models_meta,
+    def same_features(name):
+        info_path = args.artifacts_dir / name / 'model_info.json'
+        info = json.loads(info_path.read_text()) if info_path.exists() else {}
+        return info.get('numeric') == NUMERIC_FEATURES and info.get('categorical') == CATEGORICAL_FEATURES
+
+    dropped = sorted(set(previous.get('models', {})) - {r['model'] for r in rows} - {n for n in models_meta if same_features(n)})
+    if dropped:
+        log.info(f'earlier models {dropped} were trained on different data or features and are no longer listed')
+    models_meta = {n: m for n, m in models_meta.items() if same_features(n)}
+    best = choose_main_model(models_meta)                                   # chosen on validation, never on test
+
+    meta = dict(updated=now, best_model=best, best_model_rule=MAIN_MODEL_RULE, models=models_meta,
                 split=split, numeric_features=NUMERIC_FEATURES, categorical_features=CATEGORICAL_FEATURES,
                 versions=dict(python=platform.python_version(),
                               **{p: version(p) for p in ('pandas', 'numpy', 'scikit-learn', 'catboost', 'xgboost', 'lightgbm')}))
@@ -161,7 +187,7 @@ def main():
     cols = ['val_pr_auc', 'test_pr_auc', 'test_auc_roc', 'test_precision', 'test_recall', 'test_f1', 'test_threshold', 'rounds']
     show = table[cols].astype(float).astype({'rounds': int})
     log.info('\n' + show.to_string(float_format='{:.4f}'.format) + '\n')
-    log.info(f'best model (highest validation PR-AUC): {best}')
+    log.info(f'main model: {best} ({MAIN_MODEL_RULE})')
     log.info(f'saved models to {config.display_path(args.artifacts_dir)}/, metrics to {config.display_path(out)}')
 
 

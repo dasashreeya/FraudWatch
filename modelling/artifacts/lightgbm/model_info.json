@@ -111,11 +111,9 @@
     "merchant",
     "category",
     "gender",
-    "state",
-    "job",
-    "city"
+    "state"
   ],
   "seed": 42,
-  "threshold": 0.23259086872423654,
-  "best_iteration": 473
+  "threshold": 0.20309574326335855,
+  "best_iteration": 607
 }

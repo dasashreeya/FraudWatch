@@ -7,7 +7,7 @@ __pycache__/
 /data
 *.zip
 
-# Trained models: only the best model (LightGBM) and the files it needs are committed.
+# Trained models: only the main model (LightGBM) and the files it needs are committed.
 # `python train.py` recreates all three models.
 artifacts/*
 !artifacts/lightgbm/

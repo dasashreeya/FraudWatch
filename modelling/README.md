@@ -4,7 +4,7 @@ This project trains and serves a model that flags fraudulent credit-card transac
 [Sparkov simulated transactions dataset](https://www.kaggle.com/datasets/kartik2112/fraud-detection): 1.85 million
 transactions from 999 cardholders over 2019–2020, of which 0.52% are fraud.
 
-The pipeline covers data cleaning, 111 features, three gradient-boosting models and a time-based evaluation. Most
+The pipeline covers data cleaning, 109 features, three gradient-boosting models and a time-based evaluation. Most
 features describe the card's **recent activity** (its last few hours and last few transactions), because fraud
 arrives in bursts. Every feature can be computed at the moment a card is swiped, because it uses only earlier
 transactions and never a fraud label. `check_leakage.py` verifies this, and
@@ -13,13 +13,13 @@ transactions and never a fraud label. `check_leakage.py` verifies this, and
 **What you can do with it:**
 - download the data (`download_data.py`)
 - build the features, then train and compare CatBoost, XGBoost and LightGBM (`train.py`)
-- score transactions with the included best model (`predict.py`)
+- score transactions with the included main model (`predict.py`)
 - verify that no feature uses future data or labels (`check_leakage.py`)
 - try new features or settings with the experiment tools (`experiments/`)
 
 **Headline result** (test set: 555,719 transactions from the last 6 months of 2020, never used for any choice):
-the best model (LightGBM, chosen on validation) reaches **PR-AUC 0.987**, catching **95% of fraud transactions
-at 97% precision**.
+the main model (LightGBM, chosen on validation) reaches **PR-AUC 0.9875**, catching **95% of fraud transactions
+at 97.5% precision**.
 
 **Versions.** This README describes **v2**, the current model, which `predict.py` uses. The previous model,
 **v1** (CatBoost on the card's long-term history only), reached PR-AUC 0.949 and caught 86% at 95% precision. It
@@ -54,16 +54,16 @@ pip install -r requirements.txt          # 2. install the pinned libraries
 brew install libomp                      #    macOS only: OpenMP runtime for XGBoost and LightGBM
 
 python download_data.py                  # 3. download the dataset into data/ (~210 MB zip, ~500 MB unzipped)
-python predict.py                        # 4. score the test file with the included best model (~0.5-2 min)
+python predict.py                        # 4. score the test file with the included main model (~0.5-2 min)
 python train.py                          # 5. optional: rebuild features, retrain and evaluate all 3 models (~5-10 min)
 python check_leakage.py                  # 6. optional: verify no feature looks ahead or uses labels (~2-3 min)
 ```
 
-The best model (LightGBM) is included in `artifacts/`, so step 4 works straight after the download. It should end
+The main model (LightGBM) is included in `artifacts/`, so step 4 works straight after the download. It should end
 with these lines, confirming that inference reproduces the training-time evaluation exactly:
 ```
-metrics on these 555,719 labelled transactions (2,145 fraud): PR-AUC 0.9873 | ROC-AUC 0.9996 | precision 0.9741 | recall 0.9469 | F1 0.9603
-training-time test metrics: PR-AUC 0.9873 | precision 0.9741 | recall 0.9469 | F1 0.9603 -> MATCH
+metrics on these 555,719 labelled transactions (2,145 fraud): PR-AUC 0.9875 | ROC-AUC 0.9996 | precision 0.9752 | recall 0.9538 | F1 0.9644
+training-time test metrics: PR-AUC 0.9875 | precision 0.9752 | recall 0.9538 | F1 0.9644 -> MATCH
 ```
 After step 5, `predict.py` also compares every probability with the ones `train.py` saved:
 ```
@@ -92,7 +92,7 @@ check vs training-time test predictions: 555,719 common transactions, max |proba
 │
 ├── experiments/          tools used to choose the features, and a record of what was tried (own README)
 ├── data/                 (created) fraudTrain.csv, fraudTest.csv                     - not in git
-├── artifacts/            best model (lightgbm/) + job_buying_power.pkl + metadata.json; train.py writes all models here
+├── artifacts/            main model (lightgbm/) + job_buying_power.pkl + metadata.json; train.py writes all models here
 └── results/              (created) metrics.csv, feature_importance/, logs, predictions
 ```
 
@@ -185,14 +185,14 @@ Fraud models are used on future data, so the split follows time:
 | Part | Rows | Fraud (cards) | Period | Used for |
 |---|---|---|---|---|
 | **fit** | 1,102,173 | 6,373 (644) | 2019-01-01 → 2020-04-03 | training |
-| **val** | 194,502 | 1,133 (120) | 2020-04-03 → 2020-06-21 | early stopping, decision threshold, choosing the best model |
+| **val** | 194,502 | 1,133 (120) | 2020-04-03 → 2020-06-21 | early stopping, decision threshold, choosing the main model |
 | **test** | 555,719 | 2,145 (218) | 2020-06-21 → 2020-12-31 | final report only |
 
 `fit` and `val` are the first 85% and last 15% of the training file by time (`VAL_FRAC` in `config.py`). `test` is
 the test file.
 
 ### 5.3 Features
-There are 105 numeric and 6 categorical features (`merchant, category, gender, state, job, city`). Almost all of
+There are 105 numeric and 4 categorical features (`merchant, category, gender, state`). Almost all of
 them describe a transaction **relative to earlier transactions** of the same card, merchant or category.
 
 **Long-term profile** of the card, merchant and category:
@@ -233,12 +233,18 @@ night purchases an hour earlier. This took validation PR-AUC from 0.978 to 0.995
   data.
 - **Travel and distance-from-usual-location features.** v1 had them; they were removed for the same reason, with
   no loss in accuracy.
+- **City and job.** They identify the card (city + job + state is unique for every card). Encoded as model inputs,
+  they would let a model memorise cards. Their training-time encodings would also carry information about later
+  transactions: a frequency over the training period tells a short-lived, fraud-only card from a normal one.
+  Removing them cost no accuracy. `job` still feeds the job buying-power model.
 
-**Every history feature uses only transactions strictly before the current one, and never a fraud label.**
-That is what makes them computable at swipe time, and it is enforced by `check_leakage.py`.
-Most are computed by `features.win_stats`: for every row, the count and mean of a value over earlier rows of
-the same group (card, merchant, …) within a time window. It runs in O(n log n) using prefix sums and binary
-search.
+**Every history feature uses only earlier transactions and never a fraud label.** That is what makes them
+computable at swipe time, and `check_leakage.py` tests it. One convention: transactions in exactly the same
+second count as earlier, in a fixed order (by card, then transaction id), identically in training and
+inference. This affects 88 transactions that share a second with another one of the same card, none of them
+fraud. Most features are computed by `features.win_stats`: for every row, the count and mean of a value over
+earlier rows of the same group (card, merchant, …) within a time window. It runs in O(n log n) using prefix sums
+and binary search.
 
 The **job buying-power** features come from a small model: TF-IDF of the job title plus state, with ridge
 regression on age. It is fitted on the training period and saved (`artifacts/job_buying_power.pkl`), so
@@ -284,14 +290,17 @@ All three use the same training procedure:
 | Model | Categorical handling | Settings |
 |---|---|---|
 | **CatBoost** | Native: target statistics computed in time order (`has_time=True`), so a training row is encoded only from earlier rows | learning rate 0.1, depth 6 |
-| **XGBoost** | One-hot for ≤ 60 levels (category, gender, state); frequency encoding for merchant, job, city | learning rate 0.1, depth 7, 80% row/column sampling |
+| **XGBoost** | One-hot for category, gender and state. Merchant (693 levels) is left out: frequency or target encoding over the training rows would leak later transactions into training rows, and the merchant history features already describe it | learning rate 0.1, depth 7, 80% row/column sampling |
 | **LightGBM** | Same encoded matrix as XGBoost | learning rate 0.1, depth 7 / 127 leaves, 80% row/column sampling, `min_sum_hessian_in_leaf=1`, `lambda_l2=1` |
 
 LightGBM's two regularisation settings copy XGBoost's defaults (`min_child_weight=1`, `lambda=1`). In development
 runs with LightGBM's own defaults (`1e-3` and `0`), leaves holding only a few fraud rows got extreme values on this
 imbalanced data, and early stopping ended training after 24 rounds at validation PR-AUC 0.92.
 
-The **best model** is the one with the highest **validation** PR-AUC. The test set is never used for any choice.
+The **main model**, the one `predict.py` uses, is chosen on **validation** PR-AUC. Models within 0.001 of the top
+score count as tied, since seed-to-seed noise is about 0.0005. A tie goes to the lightest library to deploy: on
+Linux, LightGBM is about 3.5 MB, against about 130 MB for XGBoost and about 90 MB for CatBoost
+(`choose_main_model` in `train.py`). The test set is never used for any choice.
 
 ---
 
@@ -300,21 +309,22 @@ From `python train.py` (seed 42); also in `results/metrics.csv` and `artifacts/m
 
 | Model | Val PR-AUC | **Test PR-AUC** | Test ROC-AUC | Test precision | Test recall | Test F1 | Threshold | Rounds | Train time* |
 |---|---|---|---|---|---|---|---|---|---|
-| **LightGBM** (best on validation) | **0.9952** | 0.9873 | **0.9996** | 0.974 | 0.947 | 0.960 | 0.233 | 473 | 42 s |
-| XGBoost | 0.9951 | **0.9880** | 0.9994 | 0.973 | **0.953** | 0.963 | 0.176 | 412 | 59 s |
-| CatBoost | 0.9945 | 0.9862 | 0.9993 | **0.992** | 0.942 | **0.966** | 0.213 | 663 | 165 s |
+| **LightGBM** (main model) | 0.9957 | **0.9875** | 0.9996 | 0.975 | **0.954** | 0.964 | 0.203 | 607 | 40 s |
+| XGBoost | 0.9957 | 0.9872 | 0.9996 | 0.982 | 0.947 | 0.964 | 0.372 | 283 | 35 s |
+| CatBoost | 0.9946 | 0.9872 | 0.9993 | **0.990** | 0.946 | **0.968** | 0.261 | 620 | 105 s |
 
 \* Measured on an Apple M4 (10 cores) with little else running. Times depend heavily on machine load: the
 `train_secs` column of `results/metrics.csv` records your latest run. Feature building adds 30–90 s. All other
 columns are deterministic and match `results/metrics.csv`.
 
 ### 6.1 What the numbers mean
-- **The three models are effectively tied.** On test, the best model flags 2,085 of 555,719 transactions; 97% of
-  those are fraud, and they cover 95% of all fraud transactions.
-- **Differences of about 0.002 PR-AUC are noise.** Over 3 seeds (42, 1, 2), test PR-AUC was 0.9878 ± 0.0005
-  (LightGBM), 0.9876 ± 0.0004 (XGBoost) and 0.9864 ± 0.0006 (CatBoost), and the test fraud comes from only 218
+- **The three models are tied.** XGBoost leads LightGBM on validation by 0.00005, far below the noise, so the
+  main model is LightGBM, the lightest to deploy ([section 5.5](#55-models)). On test, it flags 2,098 of 555,719
+  transactions; 97.5% of those are fraud, and they cover 95% of all fraud transactions.
+- **Differences of about 0.002 PR-AUC are noise.** Over 3 seeds (42, 1, 2), test PR-AUC was 0.9877 ± 0.0004
+  (LightGBM), 0.9878 ± 0.0006 (XGBoost) and 0.9871 ± 0.0008 (CatBoost), and the test fraud comes from only 218
   cards. Compare future experiments on validation PR-AUC over several seeds (`experiments/`).
-- **Validation scores higher than test** (0.995 vs 0.987) partly because fraud is rarer in test (0.39% vs 0.58%),
+- **Validation scores higher than test** (0.996 vs 0.988) partly because fraud is rarer in test (0.39% vs 0.58%),
   which lowers PR-AUC. The threshold chosen on validation then trades slightly differently on test.
 
 ### 6.2 Why v2 outperforms v1
@@ -325,27 +335,42 @@ similarity and location, and travel between transactions. It is kept under the g
 
 | Model | v1: test PR-AUC | precision / recall | v2: test PR-AUC | precision / recall |
 |---|---|---|---|---|
-| LightGBM | 0.9513 ± 0.0024 | 0.931 / 0.876 | **0.9878 ± 0.0005** | 0.974 / 0.951 |
-| XGBoost | 0.9507 ± 0.0015 | 0.945 / 0.864 | **0.9876 ± 0.0004** | 0.971 / 0.956 |
-| CatBoost | 0.9509 ± 0.0020 | 0.942 / 0.876 | **0.9864 ± 0.0006** | 0.985 / 0.951 |
+| LightGBM | 0.9513 ± 0.0024 | 0.931 / 0.876 | **0.9877 ± 0.0004** | 0.977 / 0.952 |
+| XGBoost | 0.9507 ± 0.0015 | 0.945 / 0.864 | **0.9878 ± 0.0006** | 0.983 / 0.946 |
+| CatBoost | 0.9509 ± 0.0020 | 0.942 / 0.876 | **0.9871 ± 0.0008** | 0.987 / 0.949 |
 
-- **Fewer misses and fewer false alarms.** Comparing the saved best models (v1 CatBoost, v2 LightGBM), v2 misses
-  **114** of the 2,145 test fraud transactions instead of **302**, with **54** false alarms instead of **94**.
-- **Far beyond noise.** The part of PR-AUC still missing shrank by about three quarters (from 0.049 to 0.013).
-  Resampling the test cards 300 times, v2 scored higher every time (95% range of the gain: +0.030 to +0.050).
+Comparing the saved main models (v1 CatBoost, v2 LightGBM) on the test set:
+
+| | v1 | v2 |
+|---|---|---|
+| Fraud transactions missed (of 2,145) | 302 | **99** |
+| False alarms | 94 | **52** |
+| Fraud-free cards that get any alert (of 706) | 68 | **26** |
+| Fraud bursts flagged at their **first** fraudulent transaction (of 214) | 79.9% | 79.9% |
+| PR-AUC on the first transaction of each burst | 0.821 | 0.839 |
+| PR-AUC on the later transactions of a burst | 0.951 | **0.993** |
+
+- **The gain is far beyond noise.** The part of PR-AUC still missing shrank by about three quarters (from 0.049 to
+  0.013). Resampling the test cards 300 times, v2 scored higher every time (95% range of the gain: +0.030 to
+  +0.050).
+- **v2 does not catch bursts earlier.** Its gain on the first transaction of a burst (+0.018) is uncertain (95%
+  range −0.005 to +0.043).
+- **Where v2 is better:** the later transactions of a burst, which matter whenever a card is not blocked at the
+  first alert, and far fewer false alarms.
 
 **Why, most important first:**
 1. **v2 sees fraud bursts.** A compromised card produces an uninterrupted burst of fraud lasting up to about 3
    days. v1's shortest look-back was 3 days, so it judged each transaction mostly on its own, and most of its
    misses were ordinary-looking transactions in the middle of a burst. v2's recent-activity features (the
    previous 5 transactions, the last 1–72 hours, recent unusual night purchases) recognise that the card has just
-   behaved abnormally. This change produced almost all of the gain.
-2. **Less noise to memorise.** Home coordinates identify the card, and merchant positions are random in this
-   data. v2 drops them and the travel features built on them.
-3. **Cleaner training.** CatBoost builds its category statistics from earlier training rows only
-   (`has_time=True`), and early stopping may run up to 2,000 rounds instead of 600.
+   behaved abnormally. They also give context to a single unusual purchase on an otherwise normal card, which
+   likely explains the drop in false alarms. This change produced almost all of the gain.
+2. **Less noise to memorise.** v2 drops inputs that only identify the card or are random in this data: home
+   coordinates, merchant positions and the travel features built on them, and city and job.
+3. **Cleaner training.** No encoding gives a training row information about later transactions: CatBoost builds
+   its category statistics from earlier rows only (`has_time=True`), and nothing is frequency-encoded.
 
-Points 2 and 3 are small clean-ups; their effect on accuracy is within noise.
+Points 2 and 3 are clean-ups; their effect on accuracy is within noise.
 
 Every choice was made on validation, using two windows: the production split (A) and an earlier, independent one
 (B: fit on the first 70% of the training file, validate on the next 15%). Validation PR-AUC (LightGBM, mean of 3
@@ -356,9 +381,9 @@ seeds):
 | v1 features | 0.9775 | 0.9798 |
 | + the card's previous 3 transactions | 0.9931 | 0.9934 |
 | + all recent-activity groups | 0.9955 | 0.9967 |
-| − raw coordinates and travel features (v2) | 0.9956 | 0.9971 |
+| − raw coordinates and travel features | 0.9956 | 0.9971 |
 
-- **No gain:** removing card-identifying features, averaging the three models, retraining on fit +
+- **No gain:** removing more card-identifying features, averaging the three models, retraining on fit +
   validation, and other LightGBM settings.
 - **Promising, not included yet:** score propagation, i.e. features built from the model's scores for the card's
   earlier transactions. It reached test PR-AUC 0.991, but it needs a second model in training and inference.
@@ -366,22 +391,23 @@ seeds):
 
 ### 6.3 Most important features
 From `results/feature_importance/`. Each library measures importance differently, so compare rankings, not values:
-- **LightGBM (gain):** `amt_z_segcat` (36%), `u_amt_mean_24h` (31%), `category_grocery_pos` (7%),
-  `u_odd_cnt_72h` (6%), `is_night` (3%).
-- **XGBoost (gain):** `category_grocery_pos` (50%), `u_odd_cnt_24h` (27%), `u_amt_mean_24h` (9%), `is_night` (2%).
-- **CatBoost:** `is_night` (12%), `category` (7%), `amt` (7%), `m_amt_std_all` (4%), `amt_z_segcat` (3%).
-- **Overall:** the 60 recent-activity features carry 85% (LightGBM), 45% (XGBoost) and 52% (CatBoost) of the
+- **LightGBM (gain):** `amt_z_segcat` (37%), `u_amt_mean_24h` (31%), `category_grocery_pos` (7%),
+  `u_odd_cnt_72h` (6%), `is_night` (4%).
+- **XGBoost (gain):** `category_grocery_pos` (48%), `u_odd_cnt_24h` (25%), `u_amt_mean_24h` (9%),
+  `category_gas_transport` (5%).
+- **CatBoost:** `is_night` (12%), `cat_amt_mean_all` (5%), `category` (5%), `amt_vs_cat` (5%).
+- **Overall:** the 60 recent-activity features carry 86% (LightGBM), 41% (XGBoost) and 52% (CatBoost) of the
   total importance.
 
 ---
 
 ## 7. Inference: scoring transactions with the saved model
-`predict.py` loads a saved model and scores transactions. The best model (LightGBM) is included in `artifacts/`,
+`predict.py` loads a saved model and scores transactions. The main model (LightGBM) is included in `artifacts/`,
 so this works right after `download_data.py`. XGBoost and CatBoost are not included: run `python train.py` to
 create them, then use `--model xgboost` or `--model catboost`.
 
 ```bash
-python predict.py                          # the whole test file, best model
+python predict.py                          # the whole test file, main model
 python predict.py --limit 1000             # only the first 1,000 test transactions (time order)
 python predict.py --model xgboost          # a specific saved model
 python predict.py --input new.csv --history data/fraudTrain.csv data/fraudTest.csv --output new_scores.csv
@@ -460,6 +486,14 @@ is broken. The job buying-power features are fitted on the whole training period
 rows, but they never use fraud labels, and validation, test and new data only see training-period information.
 Run this check after adding or changing any feature.
 
+**What it does not cover:** the encoding done inside the models, which this check cannot see. It is designed
+so that no encoding carries information about later transactions:
+- **XGBoost and LightGBM** only one-hot encode category, gender and state, with levels learned on `fit`. That
+  carries no information about later transactions.
+- **CatBoost** builds its category statistics from earlier training rows only (`has_time=True`).
+- **City and job** are not model inputs, because encodings of these card-identifying columns would leak
+  (section 5.3).
+
 ---
 
 ## 9. Script and module reference
@@ -477,19 +511,19 @@ The end-to-end training pipeline:
 4. fit and apply the job buying-power model;
 5. for each model, train with early stopping, save, reload, predict validation and test, choose the threshold on
    validation, and evaluate;
-6. record the best model.
+6. record the main model (see [section 5.5](#55-models)).
 
 Options: `--models` (any of `catboost xgboost lightgbm`), `--seed`, `--data-dir`, `--artifacts-dir`,
 `--results-dir`. Training only some models keeps the `metadata.json` entries of the other models saved in
-`artifacts/`, so the best model is still chosen across all saved models. With the default folders, `train.py`
-replaces the included model with a freshly trained copy. Use different `--artifacts-dir` / `--results-dir`
-folders for experiments (e.g. `runs/seed1/...`, which is git-ignored) so the saved artifacts are not
-overwritten.
+`artifacts/` (if trained on the same data and features), so the main model is still chosen across all saved
+models. With the default folders, `train.py` replaces the included model with a freshly trained copy. Use
+different `--artifacts-dir` / `--results-dir` folders for experiments (e.g. `runs/seed1/...`, which is
+git-ignored) so the saved artifacts are not overwritten.
 
 Writes:
 - `artifacts/<model>/`: `model.cbm` / `model.json` / `model.txt`, plus `encoder.pkl` (XGBoost/LightGBM) and
   `model_info.json` (feature lists, threshold, rounds)
-- `artifacts/job_buying_power.pkl`, `artifacts/metadata.json` (best model, all metrics, split, library versions)
+- `artifacts/job_buying_power.pkl`, `artifacts/metadata.json` (main model, all metrics, split, library versions)
 - `results/metrics.csv`, `results/feature_importance/<model>.csv`, `results/test_predictions/<model>.csv`,
   `results/train.log`
 
@@ -551,8 +585,9 @@ Things to keep in mind when reading the scores:
 - **Simulation shortcuts inflate them compared with real data.** Fraud arrives in tight, uninterrupted bursts,
   which the recent-activity features exploit, and 91 cards exist only for their fraud burst (7.6% of test fraud
   is on such brand-new cards). Real fraud also comes in bursts, but less cleanly.
-- **Metrics are per transaction.** A card is usually blocked at the first alert, so the share of fraud bursts
-  caught, and how early, would be a more practical measure.
+- **Metrics are per transaction.** A card is usually blocked at the first alert, which makes the burst-level view
+  in [section 6.2](#62-why-v2-outperforms-v1) the more practical one. By that measure, v2 catches bursts no
+  earlier than v1, but raises far fewer false alarms.
 - **Inference is batch.** It recomputes features over the full history each run. A live system would maintain
   these running statistics incrementally.
 

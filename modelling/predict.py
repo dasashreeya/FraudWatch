@@ -33,7 +33,7 @@ import pandas as pd
 
 import config
 from data import LABEL, prepare, read_transactions, require_files
-from features import add_history_features
+from features import CATEGORICAL_FEATURES, NUMERIC_FEATURES, add_history_features
 from models import evaluate, load_model
 
 log = logging.getLogger('fraudwatch')
@@ -91,9 +91,12 @@ def main():
                  f'Create it with `python train.py --models {name}`.')
     require_files(args.input, *args.history)
     model = load_model(args.artifacts_dir / name)
+    if model.numeric != NUMERIC_FEATURES or model.categorical != CATEGORICAL_FEATURES:
+        sys.exit(f'the saved {name} model was trained with a different feature list than features.py defines; '
+                 f'run `python train.py` again')
     with open(args.artifacts_dir / 'job_buying_power.pkl', 'rb') as f:
         job = pickle.load(f)
-    log.info(f'model: {name}{" (best by validation PR-AUC)" if name == meta["best_model"] else ""} | '
+    log.info(f'model: {name}{" (main model)" if name == meta["best_model"] else ""} | '
              f'threshold {model.threshold:.4f} | trained {meta["models"][name]["trained"]}')
 
     # 2. rows + history -> features

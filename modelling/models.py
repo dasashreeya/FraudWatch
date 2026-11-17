@@ -79,9 +79,11 @@ class _Progress:
 # Encoding for XGBoost / LightGBM
 # ---------------------------------------------------------------------------------------------------------------
 class MatrixEncoder:
-    """Turns the categorical columns into numbers. Categoricals with at most `max_onehot`
-    levels (category, gender, state) are one-hot encoded; the others (merchant, job, city) are replaced by
-    their frequency in the training rows. Levels and frequencies are learned in fit()."""
+    """Turns the categorical columns into numbers. Categoricals with at most `max_onehot` levels (category,
+    gender, state) are one-hot encoded, with the levels learned in fit(). Categoricals with more levels
+    (merchant) are left out: the alternatives considered (frequency or target encoding over the training rows)
+    would give each training row information about later transactions, and the history features already
+    describe the merchant from earlier transactions (e.g. m_amt_cnt_all, amt_z_m). CatBoost uses merchant natively."""
 
     def __init__(self, numeric, categorical, max_onehot=60):
         self.numeric, self.categorical, self.max_onehot = list(numeric), list(categorical), max_onehot
@@ -89,13 +91,11 @@ class MatrixEncoder:
     def fit(self, rows):
         self.onehot_ = [c for c in self.categorical if rows[c].nunique() <= self.max_onehot]
         self.levels_ = {c: sorted(rows[c].unique()) for c in self.onehot_}
-        self.freq_ = {c: rows[c].value_counts(normalize=True) for c in self.categorical if c not in self.onehot_}
+        self.left_out_ = [c for c in self.categorical if c not in self.onehot_]
         return self
 
     def transform(self, rows):
         X = rows[self.numeric].copy()
-        for c, freq in self.freq_.items():
-            X[c + '_freq'] = rows[c].map(freq).astype(float).fillna(0)      # unseen value -> 0
         for c in self.onehot_:
             dummies = pd.get_dummies(pd.Categorical(rows[c], categories=self.levels_[c]), prefix=c, dtype=float)
             X = pd.concat([X, dummies.set_index(X.index)], axis=1)
