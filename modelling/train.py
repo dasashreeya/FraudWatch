@@ -40,7 +40,7 @@ import pandas as pd
 
 import config
 from data import LABEL, assign_partitions, prepare, read_transactions, require_files
-from features import CATEGORICAL_FEATURES, NUMERIC_FEATURES, JobBuyingPower, add_history_features
+from features import CATEGORICAL_FEATURES, FEATURE_VERSION, NUMERIC_FEATURES, JobBuyingPower, add_history_features
 from models import MODELS, best_f1_threshold, evaluate, load_model
 
 log = logging.getLogger('fraudwatch')
@@ -164,7 +164,8 @@ def main():
     def same_features(name):
         info_path = args.artifacts_dir / name / 'model_info.json'
         info = json.loads(info_path.read_text()) if info_path.exists() else {}
-        return info.get('numeric') == NUMERIC_FEATURES and info.get('categorical') == CATEGORICAL_FEATURES
+        return (info.get('numeric'), info.get('categorical'), info.get('feature_version')) == \
+            (NUMERIC_FEATURES, CATEGORICAL_FEATURES, FEATURE_VERSION)
 
     dropped = sorted(set(previous.get('models', {})) - {r['model'] for r in rows} - {n for n in models_meta if same_features(n)})
     if dropped:
@@ -173,7 +174,8 @@ def main():
     best = choose_main_model(models_meta)                                   # chosen on validation, never on test
 
     meta = dict(updated=now, best_model=best, best_model_rule=MAIN_MODEL_RULE, models=models_meta,
-                split=split, numeric_features=NUMERIC_FEATURES, categorical_features=CATEGORICAL_FEATURES,
+                split=split, feature_version=FEATURE_VERSION, numeric_features=NUMERIC_FEATURES,
+                categorical_features=CATEGORICAL_FEATURES,
                 versions=dict(python=platform.python_version(),
                               **{p: version(p) for p in ('pandas', 'numpy', 'scikit-learn', 'catboost', 'xgboost', 'lightgbm')}))
     meta_path.write_text(json.dumps(meta, indent=2))

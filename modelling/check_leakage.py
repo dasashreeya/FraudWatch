@@ -8,8 +8,7 @@ Method: build every feature twice,
   B) on the data cut off at 2019-09-01, with the fraud labels randomly shuffled,
 then compare the values for the transactions before the cut-off. A feature that uses only earlier transactions
 and no labels is unaffected by both changes, so its values come out identical. A feature that looks at later
-transactions, or at labels, changes. Differences below 0.01% of a feature's spread count as floating-point
-rounding.
+transactions, or at labels, changes. The comparison is exact: every value must be bit-for-bit identical.
 
 Expected result:
   - all 102 history features: identical (no look-ahead, no labels)
@@ -66,8 +65,7 @@ def main():
     columns = [c for _, cols in GROUPS for c in cols]
     a = full.set_index('trans_num').loc[part.trans_num, columns].to_numpy(float)
     b = part[columns].to_numpy(float)
-    tolerance = 1e-4 * np.nanstd(a, axis=0) + 1e-6
-    changed = (~np.isclose(a, b, rtol=0, atol=tolerance, equal_nan=True)).sum(0)
+    changed = (~np.isclose(a, b, rtol=0, atol=0, equal_nan=True)).sum(0)       # exact equality (NaN == NaN)
     changed = pd.Series(changed, index=columns)
 
     print(f'\ncompared {len(part):,} transactions before {CUTOFF}\n')

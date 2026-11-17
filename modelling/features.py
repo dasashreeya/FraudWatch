@@ -63,6 +63,11 @@ LAG_EXT_F = (['lag4_amt_vs_cat', 'lag4_hour', 'hours_since_lag4', 'lag5_amt_vs_c
 RECENT_F = [f'last{n}_{c}' for n in (5, 10) for c in ('night_frac', 'avc_mean', 'avc_max')]  # last 5 / 10 transactions
 ACTIVITY_F = VELOCITY_F + NIGHT_F + UCAT_F + LAG_F + BURST_F + HABIT_F + SEGMENT_F + LAG_EXT_F + RECENT_F   # 60
 
+# Version of the feature definitions. Saved with every trained model and checked by train.py / predict.py.
+# Bump it whenever the computation of an existing feature changes, so models trained on the old version are
+# never served with new-version features. (Adding or removing features is caught by the feature lists.)
+FEATURE_VERSION = 'v2.1'
+
 NUMERIC_FEATURES = BASE_NUM + USER_F + UM_F + MP_F + JOB_F + SIM_F + MLOC_F + TSL_F + ACTIVITY_F           # 105
 HISTORY_FEATURES = [c for c in NUMERIC_FEATURES if c not in JOB_F]                                       # 102
 # city and job are not model inputs: together they identify the card (city + job + state is unique for every
@@ -94,8 +99,10 @@ def win_stats(df, keys, val, windows, prefix, empty=-1.0):
     """For every row: count and mean of `val` over EARLIER rows with the same `keys`, within the past w days
     for each w in `windows`, plus over all earlier rows ('all'). Rows without history get `empty`.
 
-    Implementation: sort by (group, time), take prefix sums, and find each window's start with a binary
-    search on a combined (group, time) key, so it is O(n log n) for any number of groups.
+    Implementation: sort by (group, time), take running sums within each group, and find each window's start
+    with a binary search on a combined (group, time) key, so it is O(n log n) for any number of groups. The
+    running sums restart at every group, so a row's value depends only on its own group's earlier rows: it is
+    bit-for-bit identical whatever other or later rows the table contains.
     Output columns: f'{prefix}_cnt_{w}' and f'{prefix}_mean_{w}'.
     """
     gid = df.groupby(keys, sort=False).ngroup().to_numpy().astype(np.int64)
@@ -104,14 +111,18 @@ def win_stats(df, keys, val, windows, prefix, empty=-1.0):
     g, t = gid[order], ts[order]
     comp = g * (1 << 32) + t                       # sorted composite key: (group, time)
     v = df[val].to_numpy(float)[order]
-    cs = np.concatenate([[0.0], np.cumsum(v)])
+    run = pd.Series(v).groupby(g).cumsum().to_numpy()   # running sum within each group, in time order
     pos = np.arange(len(df))
     start = np.searchsorted(comp, g * (1 << 32), 'left')
+
+    def sum_before(i):                             # sum of the group's rows [start, i)
+        return np.where(i > start, run[np.maximum(i - 1, 0)], 0.0)
+
     out = {}
     for w in list(windows) + ['all']:
         lo = start if w == 'all' else np.maximum(np.searchsorted(comp, comp - int(w * 86400), 'left'), start)
         cnt = pos - lo                             # rows [lo, pos) = earlier rows of the group inside the window
-        mean = np.where(cnt > 0, (cs[pos] - cs[lo]) / np.maximum(cnt, 1), empty)
+        mean = np.where(cnt > 0, (sum_before(pos) - sum_before(lo)) / np.maximum(cnt, 1), empty)
         for name, arr in ((f'{prefix}_cnt_{w}', cnt.astype(float)), (f'{prefix}_mean_{w}', mean)):
             res = np.empty(len(df)); res[order] = arr; out[name] = res
     return pd.DataFrame(out, index=df.index)

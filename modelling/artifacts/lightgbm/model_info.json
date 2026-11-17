@@ -114,6 +114,7 @@
     "state"
   ],
   "seed": 42,
-  "threshold": 0.20309574326335855,
-  "best_iteration": 607
+  "threshold": 0.18398824812676254,
+  "best_iteration": 558,
+  "feature_version": "v2.1"
 }

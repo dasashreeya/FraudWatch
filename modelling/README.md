@@ -18,8 +18,8 @@ transactions and never a fraud label. `check_leakage.py` verifies this, and
 - try new features or settings with the experiment tools (`experiments/`)
 
 **Headline result** (test set: 555,719 transactions from the last 6 months of 2020, never used for any choice):
-the main model (LightGBM, chosen on validation) reaches **PR-AUC 0.9875**, catching **95% of fraud transactions
-at 97.5% precision**.
+the main model (LightGBM, chosen on validation) reaches **PR-AUC 0.988**, catching **95.5% of fraud transactions
+at 97% precision**.
 
 **Versions.** This README describes **v2**, the current model, which `predict.py` uses. The previous model,
 **v1** (CatBoost on the card's long-term history only), reached PR-AUC 0.949 and caught 86% at 95% precision. It
@@ -62,8 +62,8 @@ python check_leakage.py                  # 6. optional: verify no feature looks 
 The main model (LightGBM) is included in `artifacts/`, so step 4 works straight after the download. It should end
 with these lines, confirming that inference reproduces the training-time evaluation exactly:
 ```
-metrics on these 555,719 labelled transactions (2,145 fraud): PR-AUC 0.9875 | ROC-AUC 0.9996 | precision 0.9752 | recall 0.9538 | F1 0.9644
-training-time test metrics: PR-AUC 0.9875 | precision 0.9752 | recall 0.9538 | F1 0.9644 -> MATCH
+metrics on these 555,719 labelled transactions (2,145 fraud): PR-AUC 0.9877 | ROC-AUC 0.9995 | precision 0.9734 | recall 0.9552 | F1 0.9642
+training-time test metrics: PR-AUC 0.9877 | precision 0.9734 | recall 0.9552 | F1 0.9642 -> MATCH
 ```
 After step 5, `predict.py` also compares every probability with the ones `train.py` saved:
 ```
@@ -239,12 +239,16 @@ night purchases an hour earlier. This took validation PR-AUC from 0.978 to 0.995
   Removing them cost no accuracy. `job` still feeds the job buying-power model.
 
 **Every history feature uses only earlier transactions and never a fraud label.** That is what makes them
-computable at swipe time, and `check_leakage.py` tests it. One convention: transactions in exactly the same
-second count as earlier, in a fixed order (by card, then transaction id), identically in training and
-inference. This affects 88 transactions that share a second with another one of the same card, none of them
-fraud. Most features are computed by `features.win_stats`: for every row, the count and mean of a value over
-earlier rows of the same group (card, merchant, …) within a time window. It runs in O(n log n) using prefix sums
-and binary search.
+computable at swipe time, and `check_leakage.py` tests it bit for bit. Most features are computed by
+`features.win_stats`: for every row, the count and mean of a value over earlier rows of the same group (card,
+merchant, …) within a time window. It runs in O(n log n) using running sums and binary search. The sums restart
+for every group, so a value never depends on rows outside its group or on later rows.
+
+**Transactions in exactly the same second.** The window statistics and the previous-transaction features treat
+them as earlier, in a fixed order (by card, then transaction id). The rolling maxima (`u_amt_max_*`,
+`u_avc_max_*`) leave them out. Training and inference behave identically. Same-second ties are rare:
+- 88 transactions share a second with another one of the same card, none of them fraud;
+- 4,081 share a second with another transaction in the same category (from different cards), 14 of them fraud.
 
 The **job buying-power** features come from a small model: TF-IDF of the job title plus state, with ridge
 regression on age. It is fitted on the training period and saved (`artifacts/job_buying_power.pkl`), so
@@ -289,7 +293,7 @@ All three use the same training procedure:
 
 | Model | Categorical handling | Settings |
 |---|---|---|
-| **CatBoost** | Native: target statistics computed in time order (`has_time=True`), so a training row is encoded only from earlier rows | learning rate 0.1, depth 6 |
+| **CatBoost** | One-hot for category, gender and state. Merchant gets CatBoost's target statistic (share of fraud among the merchant's earlier training rows), computed in time order (`has_time=True`); CatBoost's default count statistics are switched off | learning rate 0.1, depth 6 |
 | **XGBoost** | One-hot for category, gender and state. Merchant (693 levels) is left out: frequency or target encoding over the training rows would leak later transactions into training rows, and the merchant history features already describe it | learning rate 0.1, depth 7, 80% row/column sampling |
 | **LightGBM** | Same encoded matrix as XGBoost | learning rate 0.1, depth 7 / 127 leaves, 80% row/column sampling, `min_sum_hessian_in_leaf=1`, `lambda_l2=1` |
 
@@ -309,22 +313,22 @@ From `python train.py` (seed 42); also in `results/metrics.csv` and `artifacts/m
 
 | Model | Val PR-AUC | **Test PR-AUC** | Test ROC-AUC | Test precision | Test recall | Test F1 | Threshold | Rounds | Train time* |
 |---|---|---|---|---|---|---|---|---|---|
-| **LightGBM** (main model) | 0.9957 | **0.9875** | 0.9996 | 0.975 | **0.954** | 0.964 | 0.203 | 607 | 40 s |
-| XGBoost | 0.9957 | 0.9872 | 0.9996 | 0.982 | 0.947 | 0.964 | 0.372 | 283 | 35 s |
-| CatBoost | 0.9946 | 0.9872 | 0.9993 | **0.990** | 0.946 | **0.968** | 0.261 | 620 | 105 s |
+| **LightGBM** (main model) | 0.9953 | 0.9877 | 0.9995 | 0.973 | **0.955** | 0.964 | 0.184 | 558 | 42 s |
+| XGBoost | **0.9961** | 0.9879 | 0.9995 | 0.970 | **0.955** | 0.962 | 0.160 | 441 | 47 s |
+| CatBoost | 0.9955 | **0.9881** | 0.9994 | **0.989** | 0.946 | **0.967** | 0.234 | 852 | 95 s |
 
 \* Measured on an Apple M4 (10 cores) with little else running. Times depend heavily on machine load: the
 `train_secs` column of `results/metrics.csv` records your latest run. Feature building adds 30–90 s. All other
 columns are deterministic and match `results/metrics.csv`.
 
 ### 6.1 What the numbers mean
-- **The three models are tied.** XGBoost leads LightGBM on validation by 0.00005, far below the noise, so the
-  main model is LightGBM, the lightest to deploy ([section 5.5](#55-models)). On test, it flags 2,098 of 555,719
-  transactions; 97.5% of those are fraud, and they cover 95% of all fraud transactions.
-- **Differences of about 0.002 PR-AUC are noise.** Over 3 seeds (42, 1, 2), test PR-AUC was 0.9877 ± 0.0004
-  (LightGBM), 0.9878 ± 0.0006 (XGBoost) and 0.9871 ± 0.0008 (CatBoost), and the test fraud comes from only 218
+- **The three models are tied.** XGBoost leads on validation by 0.0008, inside the 0.001 band counted as a tie,
+  so the main model is LightGBM, the lightest to deploy ([section 5.5](#55-models)). On test, LightGBM flags 2,105
+  of 555,719 transactions; 97% of those are fraud, and they cover 95.5% of all fraud transactions.
+- **Differences of about 0.002 PR-AUC are noise.** Over 3 seeds (42, 1, 2), test PR-AUC was 0.9879 ± 0.0002
+  (LightGBM), 0.9882 ± 0.0008 (XGBoost) and 0.9870 ± 0.0012 (CatBoost), and the test fraud comes from only 218
   cards. Compare future experiments on validation PR-AUC over several seeds (`experiments/`).
-- **Validation scores higher than test** (0.996 vs 0.988) partly because fraud is rarer in test (0.39% vs 0.58%),
+- **Validation scores higher than test** (0.995 vs 0.988) partly because fraud is rarer in test (0.39% vs 0.58%),
   which lowers PR-AUC. The threshold chosen on validation then trades slightly differently on test.
 
 ### 6.2 Why v2 outperforms v1
@@ -335,26 +339,28 @@ similarity and location, and travel between transactions. It is kept under the g
 
 | Model | v1: test PR-AUC | precision / recall | v2: test PR-AUC | precision / recall |
 |---|---|---|---|---|
-| LightGBM | 0.9513 ± 0.0024 | 0.931 / 0.876 | **0.9877 ± 0.0004** | 0.977 / 0.952 |
-| XGBoost | 0.9507 ± 0.0015 | 0.945 / 0.864 | **0.9878 ± 0.0006** | 0.983 / 0.946 |
-| CatBoost | 0.9509 ± 0.0020 | 0.942 / 0.876 | **0.9871 ± 0.0008** | 0.987 / 0.949 |
+| LightGBM | 0.9513 ± 0.0024 | 0.931 / 0.876 | **0.9879 ± 0.0002** | 0.975 / 0.955 |
+| XGBoost | 0.9507 ± 0.0015 | 0.945 / 0.864 | **0.9882 ± 0.0008** | 0.976 / 0.953 |
+| CatBoost | 0.9509 ± 0.0020 | 0.942 / 0.876 | **0.9870 ± 0.0012** | 0.989 / 0.948 |
 
 Comparing the saved main models (v1 CatBoost, v2 LightGBM) on the test set:
 
 | | v1 | v2 |
 |---|---|---|
-| Fraud transactions missed (of 2,145) | 302 | **99** |
-| False alarms | 94 | **52** |
-| Fraud-free cards that get any alert (of 706) | 68 | **26** |
-| Fraud bursts flagged at their **first** fraudulent transaction (of 214) | 79.9% | 79.9% |
+| Fraud transactions missed (of 2,145) | 302 | **96** |
+| False alarms | 94 | **56** |
+| Fraud-free cards that get any alert (of 706) | 68 | **29** |
+| Fraud bursts flagged at all (of 214) | 98.6% | 98.1% |
+| Fraud bursts flagged at their **first** fraudulent transaction | 79.9% | 80.8% |
 | PR-AUC on the first transaction of each burst | 0.821 | 0.839 |
 | PR-AUC on the later transactions of a burst | 0.951 | **0.993** |
 
 - **The gain is far beyond noise.** The part of PR-AUC still missing shrank by about three quarters (from 0.049 to
-  0.013). Resampling the test cards 300 times, v2 scored higher every time (95% range of the gain: +0.030 to
+  0.013). Resampling the test cards 300 times, v2 scored higher every time (95% range of the gain: +0.031 to
   +0.050).
 - **v2 does not catch bursts earlier.** Its gain on the first transaction of a burst (+0.018) is uncertain (95%
-  range −0.005 to +0.043).
+  range −0.007 to +0.044), and the share of bursts flagged at all or at their first transaction is about the
+  same.
 - **Where v2 is better:** the later transactions of a burst, which matter whenever a card is not blocked at the
   first alert, and far fewer false alarms.
 
@@ -367,8 +373,9 @@ Comparing the saved main models (v1 CatBoost, v2 LightGBM) on the test set:
    likely explains the drop in false alarms. This change produced almost all of the gain.
 2. **Less noise to memorise.** v2 drops inputs that only identify the card or are random in this data: home
    coordinates, merchant positions and the travel features built on them, and city and job.
-3. **Cleaner training.** No encoding gives a training row information about later transactions: CatBoost builds
-   its category statistics from earlier rows only (`has_time=True`), and nothing is frequency-encoded.
+3. **Cleaner training.** No encoding gives a training row information about later transactions. Categoricals are
+   one-hot encoded, and CatBoost's merchant statistic uses only earlier training rows (`has_time=True`, no count
+   statistics).
 
 Points 2 and 3 are clean-ups; their effect on accuracy is within noise.
 
@@ -393,10 +400,11 @@ seeds):
 From `results/feature_importance/`. Each library measures importance differently, so compare rankings, not values:
 - **LightGBM (gain):** `amt_z_segcat` (37%), `u_amt_mean_24h` (31%), `category_grocery_pos` (7%),
   `u_odd_cnt_72h` (6%), `is_night` (4%).
-- **XGBoost (gain):** `category_grocery_pos` (48%), `u_odd_cnt_24h` (25%), `u_amt_mean_24h` (9%),
+- **XGBoost (gain):** `category_grocery_pos` (44%), `u_odd_cnt_24h` (28%), `u_amt_mean_24h` (10%),
   `category_gas_transport` (5%).
-- **CatBoost:** `is_night` (12%), `cat_amt_mean_all` (5%), `category` (5%), `amt_vs_cat` (5%).
-- **Overall:** the 60 recent-activity features carry 86% (LightGBM), 41% (XGBoost) and 52% (CatBoost) of the
+- **CatBoost:** `category` (26%), `is_night` (8%), `cat_amt_mean_all` (5%), `amt_vs_segcat` (4%),
+  `u_odd_cnt_24h` (3%).
+- **Overall:** the 60 recent-activity features carry 86% (LightGBM), 45% (XGBoost) and 43% (CatBoost) of the
   total importance.
 
 ---
@@ -490,7 +498,9 @@ Run this check after adding or changing any feature.
 so that no encoding carries information about later transactions:
 - **XGBoost and LightGBM** only one-hot encode category, gender and state, with levels learned on `fit`. That
   carries no information about later transactions.
-- **CatBoost** builds its category statistics from earlier training rows only (`has_time=True`).
+- **CatBoost** one-hot encodes the same three columns. For merchant it uses a target statistic built from
+  earlier training rows only (`has_time=True`), and its default count statistics, which would count over the
+  whole training period, are switched off.
 - **City and job** are not model inputs, because encodings of these card-identifying columns would leak
   (section 5.3).
 
@@ -538,7 +548,7 @@ See [section 8](#8-leakage-check). Option: `--data-dir`.
 | Module | Contents |
 |---|---|
 | `config.py` | Default folders (relative to this project), file names, `VAL_FRAC = 0.15`, `SEED = 42` |
-| `data.py` | `read_transactions` (read + check columns), `prepare` (types, timestamp, sort by card and time; fails loudly on unparseable values), `assign_partitions` (fit / val / test) |
+| `data.py` | `read_transactions` (read + check columns), `prepare` (types, timestamp, sort by card and time; fails loudly on missing or unparseable values and negative amounts), `assign_partitions` (fit / val / test) |
 | `features.py` | Feature lists, `win_stats` and `_rolling` (past-only window statistics), `add_history_features` (one function per feature group, listed in `HISTORY_STEPS`), `JobBuyingPower` |
 | `models.py` | `CatBoostModel`, `XGBoostModel`, `LightGBMModel` (common `fit` / `predict_proba` / `save`), `load_model`, `MatrixEncoder`, `best_f1_threshold`, `evaluate` |
 | `leaky_reference.py` | The leaky lookup-table versions of the merchant features ([section 5.4](#54-keeping-the-merchant-features-leak-free)), used only by `check_leakage.py` as a control |
@@ -549,7 +559,8 @@ See [section 8](#8-leakage-check). Option: `--data-dir`.
    validation windows (`experiments/README.md`).
 2. If it helps, add a function to `features.py` that uses only earlier rows (`win_stats` and `_rolling` help),
    append it to `HISTORY_STEPS`, and add its column names to a feature list (they flow into
-   `NUMERIC_FEATURES`).
+   `NUMERIC_FEATURES`). If you change how an existing feature is computed, bump `FEATURE_VERSION` in
+   `features.py`, so that `predict.py` refuses models trained on the old definition.
 3. Run `python check_leakage.py`; it must still PASS.
 4. Run `python train.py --artifacts-dir runs/<name>/artifacts --results-dir runs/<name>/results`, and compare
    validation PR-AUC with the results above.

@@ -57,7 +57,8 @@ LGB_PARAMS = dict(objective='binary', learning_rate=0.1, max_depth=7, num_leaves
                   metric='None', verbose=-1)
 XGB_PARAMS = dict(objective='binary:logistic', tree_method='hist', eta=0.1, max_depth=7, subsample=0.8,
                   colsample_bytree=0.8)
-CB_PARAMS = dict(learning_rate=0.1, depth=6)
+CB_PARAMS = dict(learning_rate=0.1, depth=6, has_time=True, one_hot_max_size=60, simple_ctr=['Borders'],
+                 combinations_ctr=['Borders'])                       # same as models.CatBoostModel
 
 EXTRA = {}   # name -> DataFrame of extra columns computed outside candidates.py (e.g. stacking.py)
 

@@ -26,6 +26,7 @@ from sklearn.metrics import (accuracy_score, average_precision_score, f1_score, 
                              precision_score, recall_score, roc_auc_score)
 
 from data import LABEL
+from features import FEATURE_VERSION
 
 log = logging.getLogger('fraudwatch')
 warnings.filterwarnings('ignore', message='Failed to import numba')   # CatBoost: optional speed-up, not needed
@@ -117,6 +118,7 @@ class FraudModel:
         self.threshold = None        # F1-maximising threshold on validation, set by train.py
         self.best_iteration = None   # number of boosting rounds kept
         self.encoder = None          # MatrixEncoder for XGBoost / LightGBM
+        self.feature_version = FEATURE_VERSION   # feature definitions the model is trained on
 
     def fit(self, fit_df, val_df):
         raise NotImplementedError
@@ -135,15 +137,20 @@ class FraudModel:
             with open(directory / 'encoder.pkl', 'wb') as f:
                 pickle.dump(self.encoder, f)
         info = dict(name=self.name, numeric=self.numeric, categorical=self.categorical, seed=self.seed,
-                    threshold=self.threshold, best_iteration=self.best_iteration)
+                    threshold=self.threshold, best_iteration=self.best_iteration,
+                    feature_version=self.feature_version)
         (directory / 'model_info.json').write_text(json.dumps(info, indent=2))
 
 
 class CatBoostModel(FraudModel):
-    """CatBoost with native categorical features. Settings: learning rate 0.1, depth 6, and has_time=True:
-    CatBoost's statistics for categorical features (e.g. how often a merchant had fraud) are built from earlier
-    training rows only, in time order. (Its default uses random orders, so a training row could be encoded with
-    later rows' labels.)"""
+    """CatBoost with native categorical features. Settings: learning rate 0.1, depth 6, and how categoricals
+    are encoded:
+      - category, gender, state (at most 60 levels): one-hot, as for XGBoost / LightGBM (one_hot_max_size=60);
+      - merchant: CatBoost's target statistic ('Borders': the share of fraud among the merchant's earlier
+        training rows), computed in time order (has_time=True), so a training row only sees earlier rows.
+    CatBoost's default would also add 'Counter' statistics (how often a value occurs in the whole training
+    period), which tell a training row about later transactions, and would compute statistics in random order.
+    Both are switched off."""
     name, model_file = 'catboost', 'model.cbm'
 
     class _ValPRAUC:
@@ -177,6 +184,7 @@ class CatBoostModel(FraudModel):
         CatBoostModel._ValPRAUC.progress = _Progress()
         fit_df = fit_df.sort_values('ts', kind='stable')       # has_time: the row order is the time order
         self.model = CatBoostClassifier(iterations=MAX_ITERS, learning_rate=0.1, depth=6, has_time=True,
+                                        one_hot_max_size=60, simple_ctr=['Borders'], combinations_ctr=['Borders'],
                                         random_seed=self.seed, od_type='Iter', od_wait=PATIENCE, metric_period=1,
                                         thread_count=-1, eval_metric=CatBoostModel._ValPRAUC(len(val_df)),
                                         verbose=0, allow_writing_files=False)
@@ -289,6 +297,7 @@ def load_model(directory):
     info = json.loads((directory / 'model_info.json').read_text())
     model = MODELS[info['name']](info['numeric'], info['categorical'], info['seed'])
     model.threshold, model.best_iteration = info['threshold'], info['best_iteration']
+    model.feature_version = info.get('feature_version')
     if (directory / 'encoder.pkl').exists():
         with open(directory / 'encoder.pkl', 'rb') as f:
             model.encoder = pickle.load(f)

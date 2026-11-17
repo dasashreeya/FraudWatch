@@ -41,7 +41,8 @@ def read_transactions(path, source):
 
 def prepare(raw):
     """Clean a raw transaction table: numeric and datetime types, integer epoch seconds ('ts'), string
-    categoricals, and sort by (card, time, transaction id). Raises if any value cannot be parsed."""
+    categoricals, and sort by (card, time, transaction id). Raises if a value is missing or cannot be parsed, or if
+    an amount is negative."""
     df = raw.reset_index(drop=True)
     if df.trans_num.duplicated().any():
         raise ValueError(f'{int(df.trans_num.duplicated().sum())} duplicated trans_num values')
@@ -53,6 +54,8 @@ def prepare(raw):
     bad = df[NUMERIC + ['dt', 'dob'] + CATEGORICAL].isna().sum()
     if bad.any():
         raise ValueError(f'missing or unparseable values: {bad[bad > 0].to_dict()}')
+    if (df['amt'] < 0).any():
+        raise ValueError(f'{int((df["amt"] < 0).sum())} negative amounts; amounts must be >= 0')
     # integer epoch seconds, used for fast time-window arithmetic in the history features
     df['ts'] = ((df['dt'] - pd.Timestamp('1970-01-01')) // pd.Timedelta('1s')).astype('int64')
     for c in CATEGORICAL:

@@ -75,15 +75,16 @@ within noise, but the setting removes a look-ahead in how CatBoost encodes categ
 | Model | Features | Val PR-AUC | Test PR-AUC | Test precision | Test recall | Test F1 |
 |---|---|---|---|---|---|---|
 | LightGBM | v1 | 0.9775 | 0.9513 ± 0.0024 | 0.931 | 0.876 | 0.903 |
-| LightGBM | v2 | 0.9951 | **0.9877 ± 0.0004** | 0.977 | 0.952 | 0.964 |
+| LightGBM | v2 | 0.9952 | **0.9879 ± 0.0002** | 0.975 | 0.955 | 0.965 |
 | XGBoost | v1 | 0.9768 | 0.9507 ± 0.0015 | 0.945 | 0.864 | 0.903 |
-| XGBoost | v2 | 0.9958 | **0.9878 ± 0.0006** | 0.983 | 0.946 | 0.964 |
+| XGBoost | v2 | 0.9961 | **0.9882 ± 0.0008** | 0.976 | 0.953 | 0.964 |
 | CatBoost | v1 | 0.9786 | 0.9509 ± 0.0020 | 0.942 | 0.876 | 0.908 |
-| CatBoost | v2 | 0.9948 | **0.9871 ± 0.0008** | 0.987 | 0.949 | 0.968 |
+| CatBoost | v2 | 0.9950 | **0.9870 ± 0.0012** | 0.989 | 0.948 | 0.968 |
 
-The screening runs in sections 2–4 and 6 still had city and job (and, for XGBoost / LightGBM, a frequency
-encoding of merchant) as model inputs. v2 leaves them out (main README, section 5.3), with no measurable change in
-accuracy.
+The screening runs in sections 2–4 and 6 still had city and job as model inputs, a frequency encoding of
+merchant (XGBoost / LightGBM) and CatBoost's default category encoding. v2 leaves these out, so that no encoding
+carries information about later transactions (main README, sections 5.3 and 5.5); accuracy did not change
+measurably.
 
 ## 6. Promising next step: score propagation (`stacking.py`)
 A first-stage model scores every transaction. The final model then also gets the scores of the card's
