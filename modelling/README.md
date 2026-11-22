@@ -24,7 +24,7 @@ at 97% precision**.
 **Versions.** This README describes **v2**, the current model, which `predict.py` uses. The previous model,
 **v1** (CatBoost on the card's long-term history only), reached PR-AUC 0.949 and caught 86% at 95% precision. It
 is kept, with the code that built it, under the git tag
-[`v1`](https://github.com/drduron/650_Group_Project/tree/v1/modelling) (`git checkout v1`).
+[`v1`](https://github.com/drduron/FraudWatch/tree/v1/modelling) (`git checkout v1`).
 [Section 6.2](#62-why-v2-outperforms-v1) explains why v2 is better.
 
 ---
@@ -335,7 +335,7 @@ columns are deterministic and match `results/metrics.csv`.
 **v1**, the previous model, was CatBoost on 69 features that describe only the card's long-term profile: its
 spending over the previous 3 / 7 / 30 days and all time, merchant and category norms, job buying power, merchant
 similarity and location, and travel between transactions. It is kept under the git tag
-[`v1`](https://github.com/drduron/650_Group_Project/tree/v1/modelling). Test results, mean of 3 seeds:
+[`v1`](https://github.com/drduron/FraudWatch/tree/v1/modelling). Test results, mean of 3 seeds:
 
 | Model | v1: test PR-AUC | precision / recall | v2: test PR-AUC | precision / recall |
 |---|---|---|---|---|
